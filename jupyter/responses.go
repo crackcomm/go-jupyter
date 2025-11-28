@@ -35,7 +35,7 @@ type ExecutionResult struct {
 
 	// Payload is a list of payload dictionaries (optional and considered deprecated).
 	// Each payload dict must have a 'source' key, classifying the payload (e.g., 'page').
-	Payload []map[string]interface{} `json:"payload,omitempty"`
+	Payload []map[string]any `json:"payload,omitempty"`
 
 	// UserExpressions contains results for user_expressions if the status is 'ok'.
 	UserExpressions map[string]DisplayData `json:"user_expressions,omitempty"`
@@ -45,15 +45,15 @@ type ExecutionResult struct {
 type DisplayData struct {
 	// Data contains key/value pairs where keys are MIME types,
 	// and values are the raw data of the representation in that format.
-	Data map[string]interface{} `json:"data"`
+	Data map[string]any `json:"data"`
 
 	// Metadata is any metadata that describes the data.
-	Metadata map[string]interface{} `json:"metadata"`
+	Metadata map[string]any `json:"metadata"`
 
 	// Transient contains optional transient data introduced in version 5.1.
 	// This information is not persisted to a notebook or other documents
 	// and is intended to live only during a live kernel session.
-	Transient map[string]interface{} `json:"transient"`
+	Transient map[string]any `json:"transient"`
 }
 
 // InspectReply represents the content of an inspect_reply message in the Jupyter protocol.
@@ -66,10 +66,10 @@ type InspectReply struct {
 
 	// Data is a dictionary containing information about the inspected object.
 	// It can be empty if nothing is found.
-	Data map[string]interface{} `json:"data"`
+	Data map[string]any `json:"data"`
 
 	// Metadata is a dictionary containing additional metadata associated with the inspection result.
-	Metadata map[string]interface{} `json:"metadata"`
+	Metadata map[string]any `json:"metadata"`
 }
 
 // CompleteReply represents the content of a complete_reply message in the Jupyter protocol.
@@ -86,7 +86,7 @@ type CompleteReply struct {
 	CursorEnd int `json:"cursor_end"`
 
 	// Metadata is information that frontend plugins might use for extra display information about completions.
-	Metadata map[string]interface{} `json:"metadata"`
+	Metadata map[string]any `json:"metadata"`
 
 	// Status should be 'ok' unless an exception was raised during the request.
 	// If there is an error, Status will be 'error' along with the usual error message content.
@@ -98,7 +98,7 @@ type HistoryItem struct {
 	Session    int
 	LineNumber int
 	Input      string
-	Output     interface{}
+	Output     any
 }
 
 // HistoryReply represents the content of a history_reply message in the Jupyter protocol.
@@ -109,7 +109,7 @@ type HistoryReply struct {
 
 // UnmarshalJSON implements the json.Unmarshaler interface for HistoryItem.
 func (item *HistoryItem) UnmarshalJSON(data []byte) error {
-	var raw []interface{}
+	var raw []any
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
@@ -128,7 +128,7 @@ func (item *HistoryItem) UnmarshalJSON(data []byte) error {
 
 	if input, ok := raw[2].(string); ok {
 		item.Input = input
-	} else if tup, ok := raw[2].([]interface{}); ok && len(tup) == 2 {
+	} else if tup, ok := raw[2].([]any); ok && len(tup) == 2 {
 		item.Input, _ = tup[0].(string)
 		item.Output, _ = tup[1].(string)
 	}
@@ -138,13 +138,13 @@ func (item *HistoryItem) UnmarshalJSON(data []byte) error {
 
 // MarshalJSON implements the json.Marshaler interface for HistoryItem.
 func (item *HistoryItem) MarshalJSON() ([]byte, error) {
-	var raw []interface{}
+	var raw []any
 	raw = append(raw, item.Session, item.LineNumber)
 
 	if item.Output == nil {
 		raw = append(raw, item.Input)
 	} else {
-		raw = append(raw, []interface{}{item.Input, item.Output})
+		raw = append(raw, []any{item.Input, item.Output})
 	}
 
 	return json.Marshal(raw)

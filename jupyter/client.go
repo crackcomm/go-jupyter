@@ -54,7 +54,7 @@ type Client struct {
 
 	// Lock used to add and delete channels.
 	ioChanLock *sync.RWMutex
-	ioChannels map[string]chan<- interface{}
+	ioChannels map[string]chan<- any
 }
 
 func NewClient(ctx context.Context, info *ConnectionInfo) (_ *Client, err error) {
@@ -83,7 +83,7 @@ func NewClient(ctx context.Context, info *ConnectionInfo) (_ *Client, err error)
 		signKey:    []byte(info.Key),
 		session:    uuid.New(),
 		ioChanLock: new(sync.RWMutex),
-		ioChannels: make(map[string]chan<- interface{}),
+		ioChannels: make(map[string]chan<- any),
 	}
 	go func() {
 		if err := client.pollIO(); err != nil {
@@ -104,25 +104,25 @@ func (client *Client) createHeader(msgType string) Header {
 	}
 }
 
-func (client *Client) createMessage(msgType string, req interface{}) Message {
+func (client *Client) createMessage(msgType string, req any) Message {
 	return Message{
 		Header:   client.createHeader(msgType),
-		Metadata: make(map[string]interface{}),
+		Metadata: make(map[string]any),
 		Content:  req,
 	}
 }
 
-func (client *Client) Execute(req *ExecutionRequest) (rep ExecutionResult, ch <-chan interface{}, err error) {
+func (client *Client) Execute(req *ExecutionRequest) (rep ExecutionResult, ch <-chan any, err error) {
 	msg := client.createMessage(RequestExecute, req)
 	ch = client.addIOChannel(msg.Header.MsgID)
 	err = client.request(msg, &rep)
 	return
 }
 
-func (client *Client) addIOChannel(id string) <-chan interface{} {
+func (client *Client) addIOChannel(id string) <-chan any {
 	client.ioChanLock.Lock()
 	defer client.ioChanLock.Unlock()
-	ch := make(chan interface{})
+	ch := make(chan any)
 	client.ioChannels[id] = ch
 	return ch
 }
@@ -139,7 +139,7 @@ func (client *Client) History(req *HistoryRequest) (rep HistoryReply, err error)
 	return
 }
 
-func (client *Client) request(req Message, rep interface{}) (err error) {
+func (client *Client) request(req Message, rep any) (err error) {
 	if err = client.sendRequest(req); err != nil {
 		return
 	}
@@ -161,7 +161,7 @@ func (client *Client) sendRequest(msg Message) error {
 	return nil
 }
 
-func (client *Client) recvReply(content interface{}) (err error) {
+func (client *Client) recvReply(content any) (err error) {
 	reply := Message{Content: content}
 	body, err := client.shell.Recv()
 	if err != nil {
@@ -207,7 +207,7 @@ func maybeShouldListen(msgType string) bool {
 	}
 }
 
-func (client *Client) getIOChannel(id string) (ch chan<- interface{}, ok bool) {
+func (client *Client) getIOChannel(id string) (ch chan<- any, ok bool) {
 	client.ioChanLock.RLock()
 	defer client.ioChanLock.RUnlock()
 	ch, ok = client.ioChannels[id]
