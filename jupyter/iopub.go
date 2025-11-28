@@ -17,28 +17,28 @@ type StreamMessage struct {
 // DisplayDataMessage represents the content of a display_data message in the Jupyter protocol.
 type DisplayDataMessage struct {
 	// Data contains key/value pairs, where keys are MIME types, and values are raw data of the representation in that format.
-	Data map[string]interface{} `json:"data"`
+	Data map[string]any `json:"data"`
 
 	// Metadata contains any metadata that describes the data.
-	Metadata map[string]interface{} `json:"metadata"`
+	Metadata map[string]any `json:"metadata"`
 
 	// Transient contains optional transient data introduced in 5.1.
 	// This information is not persisted to a notebook or other documents and is intended to live only during a live kernel session.
-	Transient map[string]interface{} `json:"transient"`
+	Transient map[string]any `json:"transient"`
 }
 
 // UpdateDisplayDataMessage represents the content of an update_display_data message in the Jupyter protocol.
 type UpdateDisplayDataMessage struct {
 	// Data contains key/value pairs, where keys are MIME types, and values are raw data of the representation in that format.
-	Data map[string]interface{} `json:"data"`
+	Data map[string]any `json:"data"`
 
 	// Metadata contains any metadata that describes the data.
-	Metadata map[string]interface{} `json:"metadata"`
+	Metadata map[string]any `json:"metadata"`
 
 	// Transient contains information not to be persisted to a notebook or other environment.
 	// Intended to live only during a kernel session.
 	// The only transient key currently defined in Jupyter is display_id
-	Transient map[string]interface{} `json:"transient"`
+	Transient map[string]any `json:"transient"`
 }
 
 // ClearOutputMessage represents a Jupyter message for clearing output.
@@ -66,8 +66,8 @@ type ExecuteResultMessage struct {
 
 	// Data and Metadata are identical to a display_data message.
 	// The object being displayed is that passed to the display hook, i.e., the result of the execution.
-	Data     map[string]interface{} `json:"data"`
-	Metadata map[string]interface{} `json:"metadata"`
+	Data     map[string]any `json:"data"`
+	Metadata map[string]any `json:"metadata"`
 }
 
 // ErrorMessage represents the content of an error message in the Jupyter protocol.
@@ -103,7 +103,7 @@ type StatusMessage struct {
 	ExecutionState KernelState `json:"execution_state"`
 }
 
-func parseContent(msgType string, content json.RawMessage) (interface{}, error) {
+func parseContent(msgType string, content json.RawMessage) (any, error) {
 	target, err := createTarget(msgType)
 	if err != nil {
 		return nil, err
@@ -116,7 +116,7 @@ func parseContent(msgType string, content json.RawMessage) (interface{}, error) 
 	return target, nil
 }
 
-func createTarget(msgType string) (interface{}, error) {
+func createTarget(msgType string) (any, error) {
 	switch msgType {
 	case "stream":
 		return new(StreamMessage), nil

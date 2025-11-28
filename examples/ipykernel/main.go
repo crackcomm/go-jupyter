@@ -9,7 +9,7 @@ import (
 	"github.com/crackcomm/go-jupyter/jupyter"
 )
 
-func consumeMessages(ch <-chan interface{}) {
+func consumeMessages(ch <-chan any) {
 	for msg := range ch {
 		switch msg := msg.(type) {
 		case *jupyter.ExecuteInputMessage:

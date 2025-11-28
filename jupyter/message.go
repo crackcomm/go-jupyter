@@ -47,7 +47,7 @@ type RawMessage struct {
 	ParentHeader Header `json:"parent_header"`
 
 	// Metadata contains any metadata associated with the message.
-	Metadata map[string]interface{} `json:"metadata"`
+	Metadata map[string]any `json:"metadata"`
 
 	// Content is the actual content of the message.
 	// The structure depends on the message type.
@@ -64,17 +64,17 @@ type Message struct {
 	ParentHeader Header `json:"parent_header"`
 
 	// Metadata contains any metadata associated with the message.
-	Metadata map[string]interface{} `json:"metadata"`
+	Metadata map[string]any `json:"metadata"`
 
 	// Content is the actual content of the message.
 	// The structure depends on the message type.
-	Content interface{} `json:"content"`
+	Content any `json:"content"`
 }
 
 func (msg *Message) Encode(signKey []byte) (parts [][]byte, err error) {
 	parts = make([][]byte, 6)
 
-	for i, v := range []interface{}{msg.Header, msg.ParentHeader, msg.Metadata, msg.Content} {
+	for i, v := range []any{msg.Header, msg.ParentHeader, msg.Metadata, msg.Content} {
 		if v != nil {
 			if parts[1+i], err = json.Marshal(v); err != nil {
 				return
@@ -157,7 +157,7 @@ func validateSignature(parts [][]byte, index int, signKey []byte) error {
 	return nil
 }
 
-func unmarshalParts(parts [][]byte, startIndex int, values ...interface{}) error {
+func unmarshalParts(parts [][]byte, startIndex int, values ...any) error {
 	for j, v := range values {
 		if parts[startIndex+j] != nil {
 			if err := json.Unmarshal(parts[startIndex+j], v); err != nil {
