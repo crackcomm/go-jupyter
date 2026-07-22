@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 )
 
 var (
@@ -13,9 +14,10 @@ var (
 	Version = "5.3"
 
 	// ErrInvalidSignature is returned when received message with an invalid signature.
-	ErrInvalidSignature = errors.New("Invalid jupyter protocol signature")
+	ErrInvalidSignature = errors.New("jupyter protocol: invalid signature")
 )
 
+// Header represents a Jupyter message header structure.
 // https://jupyter-protocol.readthedocs.io/en/latest/messaging.html#general-message-format
 type Header struct {
 	// MsgID is a unique identifier for the message, typically a UUID.
@@ -71,84 +73,86 @@ type Message struct {
 	Content any `json:"content"`
 }
 
-func (msg *Message) Encode(signKey []byte) (parts [][]byte, err error) {
+func (msg *Message) Encode(signKey SignKey) (parts [][]byte, err error) {
 	parts = make([][]byte, 6)
+	err = msg.EncodeTo(signKey, parts)
+	return
+}
+
+func (msg *Message) EncodeTo(signKey SignKey, parts [][]byte) (err error) {
+	if l := len(parts); l < 6 {
+		return fmt.Errorf("out of range: got %d expected 6", l)
+	}
 
 	for i, v := range []any{msg.Header, msg.ParentHeader, msg.Metadata, msg.Content} {
 		if v != nil {
-			if parts[1+i], err = json.Marshal(v); err != nil {
-				return
+			if parts[i+1], err = json.Marshal(v); err != nil {
+				return err
 			}
 		}
 	}
 
 	// Sign the message.
 	if signKey != nil {
-		if err = signMessage(parts[1:], signKey, &parts[0]); err != nil {
-			return
+		if err := signMessage(parts[1:], signKey, &parts[0]); err != nil {
+			return err
 		}
 	}
 
 	return
 }
 
-func signMessage(parts [][]byte, signKey []byte, signature *[]byte) (err error) {
+func signMessage(parts [][]byte, signKey SignKey, signature *[]byte) error {
 	mac := hmac.New(sha256.New, signKey)
 	for _, part := range parts {
-		mac.Write(part)
+		if _, err := mac.Write(part); err != nil {
+			return err
+		}
 	}
 	*signature = make([]byte, hex.EncodedLen(mac.Size()))
 	hex.Encode(*signature, mac.Sum(nil))
-	return
+	return nil
 }
 
-func (msg *Message) Decode(parts [][]byte, signKey []byte) (err error) {
-	var raw RawMessage
-	if err = raw.Decode(parts, signKey); err != nil {
-		return
-	}
-	if err = json.Unmarshal(raw.Content, &msg.Content); err != nil {
-		return
-	}
-	return
-}
-
-func (msg *RawMessage) Decode(parts [][]byte, signKey []byte) error {
-	index, err := findIndex(parts, "<IDS|MSG>")
-	if err != nil {
-		return err
+func (msg *RawMessage) Decode(parts [][]byte, signKey SignKey) error {
+	index, ok := findIndex(parts, "<IDS|MSG>")
+	if !ok {
+		return fmt.Errorf("invalid raw message")
 	}
 
 	// Validate signature.
-	if err := validateSignature(parts, index, signKey); err != nil {
-		return err
+	if signKey != nil {
+		if err := validateSignature(parts, index, signKey); err != nil {
+			return err
+		}
 	}
 
 	// Unmarshal contents.
 	return unmarshalParts(parts, index+2, &msg.Header, &msg.ParentHeader, &msg.Metadata, &msg.Content)
 }
 
-func findIndex(parts [][]byte, target string) (int, error) {
+func findIndex(parts [][]byte, target string) (int, bool) {
 	for i, part := range parts {
 		if string(part) == target {
-			return i, nil
+			return i, true
 		}
 	}
-	return 0, errors.New("Target not found in parts")
+	return 0, false
 }
 
-func validateSignature(parts [][]byte, index int, signKey []byte) error {
-	if signKey == nil {
-		return nil
-	}
-
+func validateSignature(parts [][]byte, index int, signKey SignKey) error {
 	mac := hmac.New(sha256.New, signKey)
 	for _, msgpart := range parts[index+2 : index+6] {
-		mac.Write(msgpart)
+		if _, err := mac.Write(msgpart); err != nil {
+			return err
+		}
 	}
 
 	signature := make([]byte, hex.DecodedLen(len(parts[index+1])))
-	hex.Decode(signature, parts[index+1])
+	_, err := hex.Decode(signature, parts[index+1])
+	if err != nil {
+		return err
+	}
 
 	if !hmac.Equal(mac.Sum(nil), signature) {
 		return ErrInvalidSignature

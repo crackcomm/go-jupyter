@@ -33,7 +33,7 @@ func main() {
 	}
 
 	// Create a new Jupyter kernel client
-	client, err := jupyter.NewClient(context.Background(), &info)
+	client, err := jupyter.NewClient(context.Background(), info)
 	if err != nil {
 		log.Fatal(err)
 	}

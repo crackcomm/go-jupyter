@@ -1,9 +1,10 @@
 package jupyter
 
 var (
-	RequestExecute = "execute_request"
-	RequestInspect = "inspect_request"
-	RequestHistory = "history_request"
+	RequestExecute  = "execute_request"
+	RequestInspect  = "inspect_request"
+	RequestHistory  = "history_request"
+	RequestShutdown = "shutdown_request"
 )
 
 // ExecutionRequest represents a request to execute source code by the kernel.
@@ -47,6 +48,28 @@ type IntrospectionRequest struct {
 	// In IPython, 0 is equivalent to typing 'x?' at the prompt, 1 is equivalent to 'x??'.
 	// The difference is up to kernels, but in IPython, level 1 includes the source code if available.
 	DetailLevel int `json:"detail_level"`
+
+	// OmitSections is a list of sections to omit in the response.
+	//
+	// Recognized sections in IPython include:
+	// 	- string_form
+	// 	- source
+	// 	- docstring
+	// 	- file
+	// 	- definition
+	// 	- init_definition
+	// 	- type_name
+	// 	- subclasses
+	// 	- call_def
+	// 	- namespace
+	// 	- length
+	// 	- file
+	// 	- class_docstring
+	// 	- init_docstring
+	// 	- call_docstring
+	//
+	// Reference: IPython/core/oinspect.py
+	OmitSections []string `json:"omit_sections,omitempty"`
 }
 
 // CompleteRequest represents the content of a complete_request message in the Jupyter protocol.
@@ -88,4 +111,10 @@ type HistoryRequest struct {
 
 	// If HistAccessType is 'search' and Unique is true, do not include duplicated history. Default is false.
 	Unique bool `json:"unique"`
+}
+
+// ShutdownRequest represents the content of a shutdown_request message in the Jupyter protocol.
+type ShutdownRequest struct {
+	// Restart is a required field but does nothing in ipykernel implementation.
+	Restart bool `json:"restart"`
 }
