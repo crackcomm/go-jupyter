@@ -39,7 +39,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	client, err := jupyter.NewClient(context.Background(), &config)
+	client, err := jupyter.NewClient(context.Background(), config)
 	if err != nil {
 		log.Fatal(err)
 	}

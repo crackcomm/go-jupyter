@@ -3,104 +3,101 @@ package jupyter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
-	"os"
+	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/go-zeromq/zmq4"
-	"github.com/google/uuid"
+	"github.com/crackcomm/go-jupyter/jupyter/zmtp"
 )
 
-// ConnectionInfo - Jupyter kernel connection info.
-type ConnectionInfo struct {
-	SignatureScheme string `json:"signature_scheme"`
-	Transport       string `json:"transport"`
-	IP              string `json:"ip"`
-	Key             string `json:"key"`
-	StdinPort       int    `json:"stdin_port"`
-	ControlPort     int    `json:"control_port"`
-	IoPubPort       int    `json:"iopub_port"`
-	HeartBeatPort   int    `json:"hb_port"`
-	ShellPort       int    `json:"shell_port"`
-}
-
-func (info *ConnectionInfo) ShellAddr() string {
-	return fmt.Sprintf("%s://%s:%d", info.Transport, info.IP, info.ShellPort)
-}
-
-func (info *ConnectionInfo) IoPubAddr() string {
-	return fmt.Sprintf("%s://%s:%d", info.Transport, info.IP, info.IoPubPort)
-}
-
-func ReadConfigFile(path string) (info ConnectionInfo, err error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	if err = json.Unmarshal(data, &info); err != nil {
-		return
-	}
-	return
-}
-
-// Client - Jupyter kernel client.
+// Client - Jupyter kernel client implemented using pure Go ZMTP.
 type Client struct {
-	shell   zmq4.Socket
-	iopub   zmq4.Socket
-	signKey []byte
-	session uuid.UUID
+	shellConn net.Conn
+	iopubConn net.Conn
+	signKey   SignKey
+	session   string
 
 	// Lock used to add and delete channels.
 	ioChanLock *sync.RWMutex
 	ioChannels map[string]chan<- any
 }
 
-func NewClient(ctx context.Context, info *ConnectionInfo) (_ *Client, err error) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer func() {
-		if err != nil {
-			cancel()
+func NewClient(ctx context.Context, info ConnectionInfo) (*Client, error) {
+	var (
+		shellConn net.Conn
+		iopubConn net.Conn
+	)
+	closeAll := func() {
+		if shellConn != nil {
+			_ = shellConn.Close()
 		}
-	}()
-	shell := zmq4.NewReq(ctx)
-	if err = shell.Dial(info.ShellAddr()); err != nil {
-		err = fmt.Errorf("Shell connection error: %v", err)
-		return
+		if iopubConn != nil {
+			_ = iopubConn.Close()
+		}
 	}
-	iopub := zmq4.NewSub(ctx)
-	if err = iopub.Dial(info.IoPubAddr()); err != nil {
-		err = fmt.Errorf("IoPub connection error: %v", err)
-		return
+
+	// 1. Dial & Handshake Shell socket (DEALER pattern)
+	var err error
+	shellConn, err = dialAddr(ctx, info.ShellAddr())
+	if err != nil {
+		return nil, fmt.Errorf("shell dial: %w", err)
 	}
-	if err = iopub.SetOption(zmq4.OptionSubscribe, ""); err != nil {
-		return
+	if err := zmtp.PerformHandshake(shellConn, "DEALER"); err != nil {
+		closeAll()
+		return nil, fmt.Errorf("shell zmtp handshake: %w", err)
 	}
+
+	// 2. Dial & Handshake IOPub socket (SUB pattern)
+	iopubConn, err = dialAddr(ctx, info.IOPubAddr())
+	if err != nil {
+		closeAll()
+		return nil, fmt.Errorf("iopub dial: %w", err)
+	}
+	if err := zmtp.PerformHandshake(iopubConn, "SUB"); err != nil {
+		closeAll()
+		return nil, fmt.Errorf("iopub zmtp handshake: %w", err)
+	}
+
+	// 3. Send ZMTP subscription frame (subscribe to all topics: byte 0x01)
+	if err := zmtp.SendMultipart(iopubConn, [][]byte{[]byte("\x01")}); err != nil {
+		closeAll()
+		return nil, fmt.Errorf("iopub subscribe: %w", err)
+	}
+
 	client := Client{
-		shell:      shell,
-		iopub:      iopub,
-		signKey:    []byte(info.Key),
-		session:    uuid.New(),
+		shellConn:  shellConn,
+		iopubConn:  iopubConn,
+		signKey:    info.SignKey(),
+		session:    strconv.FormatInt(time.Now().UnixNano(), 10),
 		ioChanLock: new(sync.RWMutex),
 		ioChannels: make(map[string]chan<- any),
 	}
+
 	go func() {
-		if err := client.pollIO(); err != nil {
-			cancel()
+		if err := client.pollIO(); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("iopub error: %v", err)
+			_ = client.Close()
 		}
 	}()
+
 	return &client, nil
 }
 
 func (client *Client) createHeader(msgType string) Header {
+	now := time.Now().UTC()
 	return Header{
 		Version:  Version,
-		Date:     time.Now().UTC().Format(time.RFC3339),
-		MsgID:    uuid.New().String(),
+		Date:     now.Format(time.RFC3339),
+		MsgID:    strconv.FormatInt(now.UnixNano(), 10),
 		MsgType:  msgType,
 		Username: "go-jupyter",
-		Session:  client.session.String(),
+		Session:  client.session,
 	}
 }
 
@@ -139,71 +136,85 @@ func (client *Client) History(req *HistoryRequest) (rep HistoryReply, err error)
 	return
 }
 
-func (client *Client) request(req Message, rep any) (err error) {
-	if err = client.sendRequest(req); err != nil {
-		return
-	}
-	err = client.recvReply(&rep)
+func (client *Client) Shutdown() (rep map[string]any, err error) {
+	rep = make(map[string]any)
+	msg := client.createMessage(RequestShutdown, ShutdownRequest{Restart: false})
+	err = client.request(msg, &rep)
 	return
 }
 
-func (client *Client) sendRequest(msg Message) error {
-	frames := [][]byte{[]byte("<IDS|MSG>")}
-	encoded, err := msg.Encode(client.signKey)
-	if err != nil {
-		return fmt.Errorf("Error encoding message: %v", err)
+func (client *Client) request(req Message, rep any) error {
+	if err := client.sendRequest(req); err != nil {
+		return err
 	}
-	frames = append(frames, encoded...)
+	return client.recvReply(&rep)
+}
 
-	if err := client.shell.SendMulti(zmq4.NewMsgFrom(frames...)); err != nil {
-		return fmt.Errorf("Error sending shell message: %v", err)
+func (client *Client) sendRequest(msg Message) error {
+	parts := make([][]byte, 7)
+	parts[0] = []byte("<IDS|MSG>")
+
+	if err := msg.EncodeTo(client.signKey, parts[1:]); err != nil {
+		return fmt.Errorf("encode: %v", err)
+	}
+
+	// Clean up trailing nil frames before sending over ZMTP
+	for len(parts) > 0 && parts[len(parts)-1] == nil {
+		parts = parts[:len(parts)-1]
+	}
+
+	if err := zmtp.SendMultipart(client.shellConn, parts); err != nil {
+		return fmt.Errorf("send: %w", err)
 	}
 	return nil
 }
 
 func (client *Client) recvReply(content any) (err error) {
-	reply := Message{Content: content}
-	body, err := client.shell.Recv()
+	frames, err := zmtp.ReadMultipart(client.shellConn)
 	if err != nil {
-		return
+		return err
 	}
-	return reply.Decode(body.Frames, client.signKey)
+	var raw RawMessage
+	if err := raw.Decode(frames, client.signKey); err != nil {
+		return err
+	}
+	return json.Unmarshal(raw.Content, content)
 }
 
-func (client *Client) pollIO() (err error) {
+func (client *Client) pollIO() error {
 	for {
-		body, err := client.iopub.Recv()
+		frames, err := zmtp.ReadMultipart(client.iopubConn)
 		if err != nil {
-			break
-		}
-		var msg RawMessage
-		if err = msg.Decode(body.Frames, client.signKey); err != nil {
-			return fmt.Errorf("Error decoding a message: %#v", err)
-		}
-		content, err := parseContent(msg.Header.MsgType, msg.Content)
-		if err != nil {
-			return fmt.Errorf("Error decoding a content: %#v (MsgType: %s)", err, msg.Header.MsgType)
-		}
-		if ch, ok := client.getIOChannel(msg.ParentHeader.MsgID); ok {
-			ch <- content
-		} else if msgType := msg.ParentHeader.MsgType; maybeShouldListen(msgType) {
-			return fmt.Errorf("Message dropped on empty channel: %s", msgType)
+			if errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
 		}
 
-		// close the channel if status is idle
-		if status, ok := content.(*StatusMessage); ok && status.ExecutionState == StateIdle {
-			client.deleteIOChannel(msg.ParentHeader.MsgID)
+		var raw RawMessage
+		if err := raw.Decode(frames, client.signKey); err != nil {
+			return fmt.Errorf("iopub decode: %w", err)
 		}
-	}
-	return
-}
 
-func maybeShouldListen(msgType string) bool {
-	switch msgType {
-	case RequestExecute:
-		return true
-	default:
-		return false
+		if raw.ParentHeader.MsgType != RequestExecute {
+			continue
+		}
+
+		msg, err := unmarshalIOPubMessage(raw.Header.MsgType, raw.Content)
+		if err != nil {
+			return fmt.Errorf("iopub unmarshal: %w (%s)", err, raw.Header.MsgType)
+		}
+
+		if ch, ok := client.getIOChannel(raw.ParentHeader.MsgID); ok {
+			ch <- msg
+		} else {
+			return fmt.Errorf("already closed %s", raw.ParentHeader.MsgID)
+		}
+
+		// Close channel if execution state is idle
+		if status, ok := msg.(*StatusMessage); ok && status.ExecutionState == StateIdle {
+			client.deleteIOChannel(raw.ParentHeader.MsgID)
+		}
 	}
 }
 
@@ -217,29 +228,46 @@ func (client *Client) getIOChannel(id string) (ch chan<- any, ok bool) {
 func (client *Client) deleteIOChannel(id string) {
 	client.ioChanLock.Lock()
 	defer client.ioChanLock.Unlock()
-	if ch, ok := client.ioChannels[id]; ok {
-		close(ch)
+	ch, ok := client.ioChannels[id]
+	if !ok {
+		return
 	}
+	close(ch)
 	delete(client.ioChannels, id)
 }
 
 func (client *Client) Close() error {
-	defer func() {
-		client.ioChanLock.Lock()
-		defer client.ioChanLock.Unlock()
-
-		if n := len(client.ioChannels); n != 0 {
-			log.Printf("Closing %d IO channels", n)
-		}
-		for _, ch := range client.ioChannels {
-			close(ch)
-		}
-	}()
-
-	err1 := client.shell.Close()
-	err2 := client.iopub.Close()
-	if err1 != nil {
-		return err1
+	var errs []error
+	if client.shellConn != nil {
+		errs = append(errs, client.shellConn.Close())
 	}
-	return err2
+	if client.iopubConn != nil {
+		errs = append(errs, client.iopubConn.Close())
+	}
+
+	client.ioChanLock.Lock()
+	defer client.ioChanLock.Unlock()
+
+	for _, ch := range client.ioChannels {
+		close(ch)
+	}
+
+	return errors.Join(errs...)
+}
+
+// dialAddr is a helper function that dials tcp or unix sockets depending on scheme.
+func dialAddr(ctx context.Context, rawAddr string) (net.Conn, error) {
+	network := "tcp"
+	address := rawAddr
+
+	if strings.HasPrefix(rawAddr, "tcp://") {
+		network = "tcp"
+		address = strings.TrimPrefix(rawAddr, "tcp://")
+	} else if strings.HasPrefix(rawAddr, "ipc://") {
+		network = "unix"
+		address = strings.TrimPrefix(rawAddr, "ipc://")
+	}
+
+	var d net.Dialer
+	return d.DialContext(ctx, network, address)
 }

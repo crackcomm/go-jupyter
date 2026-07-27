@@ -82,6 +82,17 @@ type ErrorMessage struct {
 	Traceback []string `json:"traceback"`
 }
 
+// StatusMessage represents the content of a status message in the Jupyter protocol.
+type StatusMessage struct {
+	// ExecutionState represents the state of the kernel: 'busy', 'idle', 'starting'.
+	ExecutionState KernelState `json:"execution_state"`
+}
+
+// WelcomeMessage represents the content of a welcome message in the Jupyter protocol.
+type WelcomeMessage struct {
+	Subscription string `json:"subscription"`
+}
+
 // KernelState represents possible execution states for the kernel.
 // https://jupyter-protocol.readthedocs.io/en/latest/messaging.html#kernel-status
 type KernelState string
@@ -97,14 +108,13 @@ const (
 	StateStarting KernelState = "starting"
 )
 
-// StatusMessage represents the content of a status message in the Jupyter protocol.
-type StatusMessage struct {
-	// ExecutionState represents the state of the kernel: 'busy', 'idle', 'starting'.
-	ExecutionState KernelState `json:"execution_state"`
+// IOPubMessage represents a valid IOPub message constraint.
+type IOPubMessage interface {
+	*StreamMessage | *DisplayDataMessage | *UpdateDisplayDataMessage | *ClearOutputMessage | *ExecuteInputMessage | *ExecuteResultMessage | *ErrorMessage | *StatusMessage | *WelcomeMessage
 }
 
-func parseContent(msgType string, content json.RawMessage) (any, error) {
-	target, err := createTarget(msgType)
+func unmarshalIOPubMessage(msgType string, content json.RawMessage) (any, error) {
+	target, err := createIOPubMessage(msgType)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +126,8 @@ func parseContent(msgType string, content json.RawMessage) (any, error) {
 	return target, nil
 }
 
-func createTarget(msgType string) (any, error) {
+// NOTE: when adding types, make sure to add them to IOPubMessage
+func createIOPubMessage(msgType string) (any, error) {
 	switch msgType {
 	case "stream":
 		return new(StreamMessage), nil
@@ -134,7 +145,9 @@ func createTarget(msgType string) (any, error) {
 		return new(ErrorMessage), nil
 	case "status":
 		return new(StatusMessage), nil
+	case "iopub_welcome":
+		return new(WelcomeMessage), nil
 	default:
-		return nil, fmt.Errorf("Unknown message type: %s", msgType)
+		return nil, fmt.Errorf("unknown message type: %s", msgType)
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"strings"
@@ -13,46 +14,47 @@ func consumeMessages(ch <-chan any) {
 	for msg := range ch {
 		switch msg := msg.(type) {
 		case *jupyter.ExecuteInputMessage:
+			// log.Printf("ExecuteInputMessage: %#v", msg)
 		case *jupyter.StatusMessage:
+			// log.Printf("StatusMessage: %s", msg)
 		case *jupyter.ErrorMessage:
-			fmt.Printf("Kernel error message:\n%s", strings.Join(msg.Traceback, "\n"))
+			log.Printf("ErrorMessage: %s\n", strings.Join(msg.Traceback, "\n"))
 		case *jupyter.StreamMessage:
-			fmt.Println(msg.Text)
+			log.Printf("StreamMessage: %s\n", msg.Text)
 		default:
-			fmt.Printf("Received: %#v\n", msg)
+			log.Printf("Unknown message: %#v", msg)
 		}
 	}
 }
 
 func main() {
-	config, err := jupyter.ReadConfigFile("/tmp/kernel.json")
+	quit := flag.Bool("quit", false, "quit")
+	kf := flag.String("config", "/tmp/kernel.json", "kernel config")
+	flag.Parse()
+
+	config, err := jupyter.ReadConfigFile(*kf)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	client, err := jupyter.NewClient(context.Background(), &config)
+	client, err := jupyter.NewClient(context.Background(), config)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer client.Close()
 
+	log.Print("start")
+
 	executeRequests := []*jupyter.ExecutionRequest{
 		{
-			Code:         "print(123 * 9999); my_var = 3; nn = np.random.rand(22, 33)",
+			Code: `
+import numpy as np
+mat = np.random.rand(2, 2)
+print(mat)`,
 			StoreHistory: true,
 			UserExpressions: map[string]string{
 				"x": "13 * 66",
 			},
-		},
-		{
-			Code: "give me error !@#$",
-		},
-		{
-			Code: "%who", // ipykernel magic
-		},
-		{
-			Code:         "my_var * 8",
-			StoreHistory: true,
 		},
 	}
 
@@ -63,18 +65,29 @@ func main() {
 		}
 		fmt.Printf("Response: %#v\n", rep)
 		consumeMessages(ch)
+		fmt.Println("-----------------------------")
 	}
 
 	inspectRep, err := client.Inspect(&jupyter.IntrospectionRequest{
-		Code: "my_var",
+		Code: "mat",
+		OmitSections: []string{
+			"docstring",
+			"class_docstring",
+			"file",
+			"length",
+		},
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("Inspection reply:\n%s\n", inspectRep.Data["text/plain"])
+	if inspectRep.Found {
+		fmt.Printf("Inspection reply:\n%s\n", inspectRep.Data["text/plain"])
+	} else {
+		fmt.Printf("Inspection reply:\n%#v\n", inspectRep)
+	}
 
 	historyReply, err := client.History(&jupyter.HistoryRequest{
-		Unique:         true,
+		Unique:         false,
 		Output:         true,
 		HistAccessType: "tail",
 		N:              5,
@@ -82,5 +95,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("Response: %#v", historyReply)
+
+	for _, item := range historyReply.History {
+		log.Printf("- %#v", item)
+	}
+
+	if *quit {
+		_, err := client.Shutdown()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 }

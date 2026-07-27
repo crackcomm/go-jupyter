@@ -3,6 +3,7 @@ package jupyter
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 )
 
 // Status represents possible status values for reply messages.
@@ -39,6 +40,9 @@ type ExecutionResult struct {
 
 	// UserExpressions contains results for user_expressions if the status is 'ok'.
 	UserExpressions map[string]DisplayData `json:"user_expressions,omitempty"`
+
+	// Metadata is a dictionary containing additional metadata associated with the execution result.
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 // DisplayData represents a message type for displaying data.
@@ -118,22 +122,46 @@ func (item *HistoryItem) UnmarshalJSON(data []byte) error {
 		return errors.New("invalid history item format")
 	}
 
-	item.Session, _ = raw[0].(int)
-	item.LineNumber, _ = raw[1].(int)
-	item.Input, _ = raw[2].(string)
+	var ok bool
+	item.Session, ok = anyToInt(raw[0])
+	if !ok {
+		return fmt.Errorf("invalid history item: %#v", raw)
+	}
+
+	item.LineNumber, ok = anyToInt(raw[1])
+	if !ok {
+		return fmt.Errorf("invalid history item: %#v", raw)
+	}
+
+	switch io := raw[2].(type) {
+	case string:
+		item.Input = io
+	case []any:
+		if len(io) != 2 {
+			return fmt.Errorf("invalid history item: %#v", raw)
+		}
+		item.Input, _ = io[0].(string)
+		item.Output, _ = io[1].(string)
+	default:
+		return fmt.Errorf("invalid history item: %#v", raw)
+	}
 
 	if len(raw) > 3 {
 		item.Output = raw[3]
 	}
 
-	if input, ok := raw[2].(string); ok {
-		item.Input = input
-	} else if tup, ok := raw[2].([]any); ok && len(tup) == 2 {
-		item.Input, _ = tup[0].(string)
-		item.Output, _ = tup[1].(string)
-	}
-
 	return nil
+}
+
+func anyToInt(num any) (int, bool) {
+	switch n := num.(type) {
+	case int:
+		return n, true
+	case float64:
+		return int(n), true
+	default:
+		return 0, false
+	}
 }
 
 // MarshalJSON implements the json.Marshaler interface for HistoryItem.
